@@ -603,15 +603,9 @@ class UpdatesTest extends Base
 
     public function testEndToEndCustomDescription()
     {
-        $c = $this->getMockCosy();
-        $dir = '/tmp/' . uniqid();
-        $this->setupDirectory($c, $dir);
-        // Create a mock app, that can respond to things.
-        $definition = $this->getMockDefinition();
-        $mock_app = $this->getMockApp($definition);
-        $c->setApp($mock_app);
-        $mock_output = $this->getMockOutputWithUpdate('psr/log', '1.0.0', '1.0.2');
-        $c->setOutput($mock_output);
+        $c = $this->cosy;
+        $dir = $this->dir;
+        $this->getMockOutputWithUpdate('psr/log', '1.0.0', '1.0.2');
         $this->placeComposerContentsFromFixture('composer-psr-log.json', $dir);
         $mock_executer = $this->createMock(CommandExecuter::class);
         $mock_executer->method('executeCommand')
@@ -659,8 +653,7 @@ a custom message
             ->willReturn($mock_provider);
 
         $c->setProviderFactory($mock_provider_factory);
-        $composer_lock_contents = file_get_contents(__DIR__ . '/../fixtures/composer-psr-log.lock');
-        file_put_contents("$dir/composer.lock", $composer_lock_contents);
+        $this->placeComposerLockContentsFromFixture('composer-lock-private.lock', $dir);
         $project = new ProjectData();
         $project->setCustomPrMessage('a custom message');
         $c->setProject($project);
@@ -671,16 +664,9 @@ a custom message
 
     public function testEndToEndNotPrivate()
     {
-        $dir = '/tmp/' . uniqid();
-        $c = $this->getMockCosy($dir);
+        $dir = $this->dir;
+        $c = $this->cosy;
         // Create a mock app, that can respond to things.
-        $mock_definition = $this->createMock(InputDefinition::class);
-        $mock_definition->method('getOptions')
-            ->willReturn([]);
-        $mock_app = $this->createMock(Application::class);
-        $mock_app->method('getDefinition')
-            ->willReturn($mock_definition);
-        $c->setApp($mock_app);
         $mock_output = $this->createMock(ArrayOutput::class);
         $mock_output->method('fetch')
             ->willReturn([
@@ -689,9 +675,7 @@ a custom message
                 ]
             ]);
         $c->setOutput($mock_output);
-        $composer_contents = file_get_contents(__DIR__ . '/../fixtures/composer-psr-log.json');
-        $composer_file = "$dir/composer.json";
-        file_put_contents($composer_file, $composer_contents);
+        $this->placeComposerContentsFromFixture('composer-psr-log.json', $dir);
         $called = false;
         $mock_executer = $this->createMock(CommandExecuter::class);
         $mock_executer->method('executeCommand')
@@ -746,29 +730,10 @@ a custom message
 
     public function testUpdatesFoundButNotSemverValidButStillAllowed()
     {
-        $c = $this->getMockCosy();
-        $dir = '/tmp/' . uniqid();
-        mkdir($dir);
-        $c->setTmpDir($dir);
-        // Create a mock app, that can respond to things.
-        $mock_definition = $this->createMock(InputDefinition::class);
-        $mock_definition->method('getOptions')
-            ->willReturn([]);
-        $mock_app = $this->createMock(Application::class);
-        $mock_app->method('getDefinition')
-            ->willReturn($mock_definition);
-        $c->setApp($mock_app);
-        $mock_output = $this->createMock(ArrayOutput::class);
-        $mock_output->method('fetch')
-            ->willReturn([
-                [
-                    $this->createUpdateJsonFromData('psr/log', '1.0.0', '2.0.1'),
-                ]
-            ]);
-        $c->setOutput($mock_output);
-        $composer_contents = file_get_contents(__DIR__ . '/../fixtures/composer-psr-log.json');
-        $composer_file = "$dir/composer.json";
-        file_put_contents($composer_file, $composer_contents);
+        $c = $this->cosy;
+        $dir = $this->dir;
+        $this->getMockOutputWithUpdate('psr/log', '1.0.0', '2.0.1');
+        $this->placeComposerContentsFromFixture('composer-psr-log.json', $dir);
         $called = false;
         $mock_executer = $this->createMock(CommandExecuter::class);
         $install_called = false;
@@ -787,29 +752,9 @@ a custom message
             ));
         $c->setExecuter($mock_executer);
         $this->assertEquals(false, $called);
-
-        // Then we are going to mock the provider factory.
-        $mock_provider_factory = $this->createMock(ProviderFactory::class);
-        $mock_provider = $this->createMock(Github::class);
-        $mock_provider->method('repoIsPrivate')
-            ->willReturn(true);
-        $mock_provider->method('getDefaultBranch')
-            ->willReturn('master');
-        $mock_provider->method('getBranchesFlattened')
-            ->willReturn([]);
-        $default_sha = 123;
-        $mock_provider->method('getDefaultBase')
-            ->willReturn($default_sha);
-        $mock_provider->method('getPrsNamed')
-            ->willReturn([]);
-        $mock_provider_factory->method('createFromHost')
-            ->willReturn($mock_provider);
-
-        $c->setProviderFactory($mock_provider_factory);
-        $this->assertEquals(false, $called);
+        $this->registerProviderFactory($c);
         $this->assertEquals(false, $install_called);
-        $composer_lock_contents = file_get_contents(__DIR__ . '/../fixtures/composer-psr-log.lock');
-        file_put_contents("$dir/composer.lock", $composer_lock_contents);
+        $this->placeComposerLockContentsFromFixture('composer-psr-log.lock', $dir);
         $c->run();
         $this->assertOutputContainsMessage('Creating pull request from psrlog100102', $c);
         $this->assertEquals(true, $called);
