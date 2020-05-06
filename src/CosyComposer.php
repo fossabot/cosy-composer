@@ -502,9 +502,8 @@ class CosyComposer
                 break;
 
             case 'gitlab.com':
-                // @todo: Not sure what this is on gitlab yet.
                 $this->execCommand(
-                    sprintf('COMPOSER_ALLOW_SUPERUSER=1 composer config --auth github-oauth.github.com %s', $this->userToken),
+                    sprintf('composer config --auth gitlab-oauth.gitlab.com %s', $this->userToken),
                     false
                 );
                 $url = sprintf('https://oauth2:%s@gitlab.com/%s', $this->userToken, $this->slug->getSlug());
@@ -515,6 +514,10 @@ class CosyComposer
                 break;
 
             default:
+                $this->execCommand(
+                    sprintf('composer config --auth gitlab-oauth.%s %s', $this->userToken, $hostname),
+                    false
+                );
                 $url = sprintf('%s://oauth2:%s@%s:%d/%s', $this->urlArray['scheme'], $this->userToken, $hostname, $this->urlArray['port'], $this->slug->getSlug());
                 break;
         }
