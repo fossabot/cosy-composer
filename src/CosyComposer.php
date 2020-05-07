@@ -191,6 +191,19 @@ class CosyComposer
     private $privateClient;
 
     /**
+     * @var array
+     */
+    private $tokens = [];
+
+    /**
+     * @param array $tokens
+     */
+    public function setTokens(array $tokens)
+    {
+        $this->tokens = $tokens;
+    }
+
+    /**
      * @return SecurityCheckerFactory
      */
     public function getCheckerFactory()
@@ -820,20 +833,19 @@ class CosyComposer
         }
     }
 
-    protected function runAuthExport($hostname)
+    protected function runAuthExportToken($hostname, $token)
     {
-
         switch ($hostname) {
             case 'github.com':
                 $this->execCommand(
-                    sprintf('composer config --auth github-oauth.github.com %s', $this->userToken),
+                    sprintf('composer config --auth github-oauth.github.com %s', $token),
                     false
                 );
                 break;
 
             case 'gitlab.com':
                 $this->execCommand(
-                    sprintf('composer config --auth gitlab-oauth.gitlab.com %s', $this->userToken),
+                    sprintf('composer config --auth gitlab-oauth.gitlab.com %s', $token),
                     false
                 );
                 break;
@@ -844,11 +856,22 @@ class CosyComposer
 
             default:
                 $this->execCommand(
-                    sprintf('composer config --auth gitlab-oauth.%s %s', $this->userToken, $hostname),
+                    sprintf('composer config --auth gitlab-oauth.%s %s', $token, $hostname),
                     false
                 );
                 break;
         }
+    }
+
+    protected function runAuthExport($hostname)
+    {
+        // If we have multiple auth tokens, export them all.
+        if (!empty($this->tokens)) {
+            foreach ($this->tokens as $token_hostname => $token) {
+                $this->runAuthExportToken($token_hostname, $token);
+            }
+        }
+        $this->runAuthExportToken($hostname, $this->userToken);
     }
 
     protected function handleIndividualUpdates($data, $lockdata, $cdata, $one_pr_per_dependency, $lock_file_contents, $prs_named, $default_base, $hostname, $default_branch, $alerts, $user_name, $user_repo)
