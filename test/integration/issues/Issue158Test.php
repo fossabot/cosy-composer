@@ -21,6 +21,10 @@ class Issue158Test extends Base
 {
     public function testIssue98()
     {
+        if (version_compare(phpversion(), "7.1.0", "<=")) {
+            $this->assertTrue(true, 'Skipping bitbucket test for version ' . phpversion());
+            return;
+        }
         $c = $this->cosy;
         $dir = $this->dir;
         $this->getMockOutputWithUpdate('psr/log', '1.0.2', '1.1.3');
