@@ -75,7 +75,7 @@ class Issue158Test extends Base
                 'values' => [],
             ]);
         $mock_prs->method('create')
-            ->willReturnCallback(function($params) use (&$correct_params) {
+            ->willReturnCallback(function ($params) use (&$correct_params) {
                 if ($params["destination"]["branch"]["name"] === 'develop') {
                     $correct_params = true;
                 }
