@@ -12,6 +12,6 @@ script:
   - if [[ $(phpenv version-name) != "7.0" ]]; then rm -rf vendor/phpunit; fi
   - if [[ $(phpenv version-name) != "7.0" ]]; then composer install; fi
   - composer test
-  - if [[ $(phpenv version-name) != "7.0" ]]; composer phpstan; fi
+  - if [[ $(phpenv version-name) != "7.0" ]]; then composer phpstan; fi
 after_success:
   - travis_retry php vendor/bin/php-coveralls -v
