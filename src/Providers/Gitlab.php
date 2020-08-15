@@ -40,7 +40,7 @@ class Gitlab implements ProviderInterface
     {
         $url = $slug->getUrl();
         if (!isset($this->cache['repo'])) {
-            $this->cache['repo'] = $this->client->api('projects')->show($this->getProjectId($url));
+            $this->cache['repo'] = $this->client->api('projects')->show(self::getProjectId($url));
         }
         return $this->cache['repo']['default_branch'];
     }
@@ -51,7 +51,7 @@ class Gitlab implements ProviderInterface
             $pager = new ResultPager($this->client);
             $api = $this->client->api('repo');
             $method = 'branches';
-            $this->cache['branches'] = $pager->fetchAll($api, $method, [$this->getProjectId($slug->getUrl())]);
+            $this->cache['branches'] = $pager->fetchAll($api, $method, [self::getProjectId($slug->getUrl())]);
         }
         return $this->cache['branches'];
     }
@@ -72,14 +72,14 @@ class Gitlab implements ProviderInterface
         $pager = new ResultPager($this->client);
         $api = $this->client->api('mr');
         $method = 'all';
-        $prs = $pager->fetchAll($api, $method, [$this->getProjectId($slug->getUrl())]);
+        $prs = $pager->fetchAll($api, $method, [self::getProjectId($slug->getUrl())]);
         $prs_named = [];
         foreach ($prs as $pr) {
             if ($pr['state'] != 'opened') {
                 continue;
             }
             // Now get the last commits for this branch.
-            $commits = $this->client->api('repo')->commits($this->getProjectId($slug->getUrl()), [
+            $commits = $this->client->api('repo')->commits(self::getProjectId($slug->getUrl()), [
                 'ref_name' => $pr['source_branch'],
             ]);
             $prs_named[$pr['source_branch']] = [
@@ -115,7 +115,7 @@ class Gitlab implements ProviderInterface
         /** @var MergeRequests $mr */
         $mr = $this->client->api('mr');
         $assignee = null;
-        $data = $mr->create($this->getProjectId($slug->getUrl()), $params['head'], $params['base'], $params['title'], $assignee, null, $params['body']);
+        $data = $mr->create(self::getProjectId($slug->getUrl()), $params['head'], $params['base'], $params['title'], $assignee, null, $params['body']);
         if (!empty($data['web_url'])) {
             $data['html_url'] = $data['web_url'];
         }
@@ -124,7 +124,7 @@ class Gitlab implements ProviderInterface
             $new_data = [
                 'assignee_ids' => $params['assignees'],
             ];
-            $mr->update($this->getProjectId($slug->getUrl()), $data["iid"], $new_data);
+            $mr->update(self::getProjectId($slug->getUrl()), $data["iid"], $new_data);
         }
         return $data;
     }
@@ -140,10 +140,10 @@ class Gitlab implements ProviderInterface
             'target_project_id' => null,
             'description' => $params['body'],
         ];
-        return $this->client->api('mr')->update($this->getProjectId($slug->getUrl()), $id, $gitlab_params);
+        return $this->client->api('mr')->update(self::getProjectId($slug->getUrl()), $id, $gitlab_params);
     }
 
-    protected function getProjectId($url)
+    public static function getProjectId($url)
     {
         $url = parse_url($url);
         return ltrim($url['path'], '/');
