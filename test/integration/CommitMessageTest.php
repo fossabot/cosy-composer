@@ -3,7 +3,7 @@
 namespace eiriksm\CosyComposerTest\integration;
 
 /**
- * Test for issue 164.
+ * Test for a default commit message.
  */
 class CommitMessageTest extends ComposerUpdateIntegrationBase
 {
@@ -13,7 +13,7 @@ class CommitMessageTest extends ComposerUpdateIntegrationBase
     protected $composerAssetFiles = 'composer-commit';
     protected $hasCorrectCommit = false;
 
-    public function testRequireDevAdded()
+    public function testCommitMessage()
     {
         $this->runtestExpectedOutput();
         self::assertEquals($this->hasCorrectCommit, true);
