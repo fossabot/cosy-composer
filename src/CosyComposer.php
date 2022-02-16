@@ -50,6 +50,11 @@ class CosyComposer
     private $urlArray;
 
     /**
+     * @var string
+     */
+    private $commitMessage;
+
+    /**
      * @var bool|string
      */
     private $lockFileContents;
@@ -674,13 +679,18 @@ class CosyComposer
         $config = Config::createFromComposerData($cdata);
         $this->handleTimeIntervalSetting($cdata);
         $lock_file = $this->compserJsonDir . '/composer.lock';
-        $lock_file_contents = false;
-        $alerts = [];
+        $initial_composer_lock_data = false;
+        $security_alerts = [];
         if (@file_exists($lock_file)) {
             // We might want to know whats in here.
-            $lock_file_contents = json_decode(file_get_contents($lock_file));
+            $initial_composer_lock_data = json_decode(file_get_contents($lock_file));
         }
-        $this->lockFileContents = $lock_file_contents;
+        $this->lockFileContents = $initial_composer_lock_data;
+        if ($config->shouldAlwaysUpdateAll() && !$initial_composer_lock_data) {
+            $this->log('Update all enabled, but no lock file present. This is not supported');
+            $this->cleanUp();
+            return;
+        }
         $app = $this->app;
         $d = $app->getDefinition();
         $opts = $d->getOptions();
@@ -705,7 +715,7 @@ class CosyComposer
                 $this->log("Security update available for $name");
             }
             if (count($result)) {
-                $alerts = $result;
+                $security_alerts = $result;
             }
         } catch (\Exception $e) {
             $this->log('Caught exception while looking for security updates:');
@@ -714,16 +724,22 @@ class CosyComposer
         // We also want to consult the Drupal security advisories, since the FriendsOfPHP/security-advisories
         // repo is a manual job merging and maintaining. On top of that, it requires the built container to be
         // up to date. So here could be several hours of delay on critical stuff.
-        $this->attachDrupalAdvisories($alerts);
+        $this->attachDrupalAdvisories($security_alerts);
         $array_input_array = [
             'outdated',
             '-d' => $this->getCwd(),
             '--minor-only' => true,
             '--format' => 'json',
             '--no-interaction' => true,
+            '--direct' => false,
         ];
         if ($config->shouldCheckDirectOnly()) {
             $array_input_array['--direct'] = true;
+        }
+        // If we should always update all, then of course we should not only check direct dependencies outdated.
+        // Regardless of the option above actually.
+        if ($config->shouldAlwaysUpdateAll()) {
+            $array_input_array['--direct'] = false;
         }
         $i = new ArrayInput($array_input_array);
         $app->run($i, $this->output);
@@ -770,12 +786,12 @@ class CosyComposer
             foreach ($data as $delta => $item) {
                 try {
                     $package_name_in_composer_json = self::getComposerJsonName($cdata, $item->name, $this->compserJsonDir);
-                    if (isset($alerts[$package_name_in_composer_json])) {
+                    if (isset($security_alerts[$package_name_in_composer_json])) {
                         continue;
                     }
                 } catch (\Exception $e) {
                     // Totally fine. Let's check if it's there just by the name we have right here.
-                    if (isset($alerts[$item->name])) {
+                    if (isset($security_alerts[$item->name])) {
                         continue;
                     }
                 }
@@ -911,7 +927,7 @@ class CosyComposer
                         ];
                         $security_update = false;
                         $package_name_in_composer_json = self::getComposerJsonName($cdata, $item->name, $this->compserJsonDir);
-                        if (isset($alerts[$package_name_in_composer_json])) {
+                        if (isset($security_alerts[$package_name_in_composer_json])) {
                             $security_update = true;
                         }
                         // If the title does not match, it means either has there arrived a security issue for the
@@ -951,47 +967,159 @@ class CosyComposer
             $this->client->createFork($user_name, $user_repo, $this->forkUser);
         }
         // Now read the lockfile.
-        $lockdata = json_decode(file_get_contents($this->compserJsonDir . '/composer.lock'));
+        $composer_lock_after_installing = json_decode(file_get_contents($this->compserJsonDir . '/composer.lock'));
         $update_type = self::UPDATE_INDIVIDUAL;
+        if ($config->shouldAlwaysUpdateAll()) {
+            $update_type = self::UPDATE_ALL;
+        }
+        $this->log('Config suggested update type ' . $update_type);
+        if ($this->project && $this->project->shouldUpdateAll()) {
+            // Only log this if this might end up being surprising. I mean override all with all. So what?
+            if ($update_type === self::UPDATE_INDIVIDUAL) {
+                $this->log('Override of update type from project data. Probably meaning first run, allowed update all');
+            }
+            $update_type = self::UPDATE_ALL;
+        }
         switch ($update_type) {
             case self::UPDATE_INDIVIDUAL:
-                $this->handleIndividualUpdates($data, $lockdata, $cdata, $one_pr_per_dependency, $lock_file_contents, $prs_named, $default_base, $hostname, $default_branch, $alerts, $total_prs);
+                $this->handleIndividualUpdates($data, $composer_lock_after_installing, $cdata, $one_pr_per_dependency, $initial_composer_lock_data, $prs_named, $default_base, $hostname, $default_branch, $security_alerts, $total_prs);
                 break;
 
             case self::UPDATE_ALL:
-                $this->handleUpdateAll();
+                $this->handleUpdateAll($initial_composer_lock_data, $composer_lock_after_installing, $security_alerts, $config, $default_base, $default_branch, $prs_named);
                 break;
         }
         // Clean up.
         $this->cleanUp();
     }
 
-    protected function handleUpdateAll()
+    protected function handleUpdateAll($initial_composer_lock_data, $composer_lock_after_installing, $alerts, Config $config, $default_base, $default_branch, $prs_named)
     {
+        // We are going to hack an item here. We want the package to be "all" and the versions to be blank.
+        $item = (object) [
+            'name' => 'violinist-all',
+            'version' => '',
+            'latest' => '',
+        ];
+        $branch_name = $this->createBranchName($item, false, $config);
+        $pr_params = [];
+        $security_update = false;
         try {
-            $this->execCommand('composer update');
-            $this->commitFiles('all dependencies');
+            $this->switchBranch($branch_name);
+            $status = $this->execCommand('composer update');
+            if ($status) {
+                throw new \Exception('Composer update command existed with status code ' . $status);
+            }
+            // Now let's find out what has actually been updated.
+            $new_lock_contents = json_decode(file_get_contents($this->compserJsonDir . '/composer.lock'));
+            $comparer = new LockDataComparer($composer_lock_after_installing, $new_lock_contents);
+            $list = $comparer->getUpdateList();
+            if (empty($list)) {
+                // That's too bad. Let's throw an exception for this.
+                throw new \UnexpectedValueException('No updates detected after running composer update');
+            }
+            // Now see if any of the packages updated was in the alerts.
+            foreach ($list as $value) {
+                if (empty($alerts[$value->getPackageName()])) {
+                    continue;
+                }
+                $security_update = true;
+            }
+            $this->log('Successfully ran command composer update for all packages');
+            $title = 'Update all composer dependencies';
+            if ($security_update) {
+                // @todo: Use message factory and package.
+                $title = sprintf('[SECURITY] %s', $title);
+            }
+            // We can do this, since the body creates a title, which it does not use. This is only used for the title.
+            // Which, again, we do not use.
+            $fake_item = $fake_post = (object) [
+                'name' => 'all',
+                'version' => '0.0.0',
+            ];
+            $body = $this->createBody($fake_item, $fake_post, null, $security_update, $list);
+            $pr_params = $this->getPrParams($branch_name, $body, $title, $default_branch, $config);
+            // OK, so... If we already have a branch named the name we are about to use. Is that one a branch
+            // containing all the updates we now got? And is it actually up to date with the target branch? Of course,
+            // if there is no such branch, then we will happily push it.
+            if (!empty($prs_named[$branch_name])) {
+                $up_to_date = false;
+                if (!empty($prs_named[$branch_name]['base']['sha']) && $prs_named[$branch_name]['base']['sha'] == $default_base) {
+                    $up_to_date = true;
+                }
+                $should_update = $this->shouldUpdatePr($branch_name, $pr_params, $prs_named);
+                if (!$should_update && $up_to_date) {
+                    // Well well well. Let's not push this branch over and over, shall we?
+                    $this->log(sprintf('The branch %s with all updates is already up to date. Aborting the PR update', $branch_name));
+                    return;
+                }
+            }
+            $this->commitFilesForAll($config);
+            $this->pushCode($branch_name, $default_base, $initial_composer_lock_data);
+            $pullRequest = $this->createPullrequest($pr_params);
+            if (!empty($pullRequest['html_url'])) {
+                $this->log($pullRequest['html_url'], Message::PR_URL, [
+                    'package' => 'all',
+                ]);
+            }
+        } catch (ValidationFailedException $e) {
+            // @todo: Do some better checking. Could be several things, this.
+            $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
+        } catch (\Gitlab\Exception\RuntimeException $e) {
+            $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
         } catch (\Throwable $e) {
-            $this->log('Caught exception while running update all');
+            $this->log('Caught exception while running update all: ' . $e->getMessage());
         }
     }
 
-    protected function commitFiles($package_name, UpdateListItem $item = null, Config $config = null, $is_dev = false)
+    protected function commitFilesForAll(Config $config)
+    {
+        $this->cleanRepoForCommit();
+        $creator = $this->getCommitCreator($config);
+        $msg = $creator->generateMessageFromString('Update all dependencies');
+        $this->commitFiles($msg);
+    }
+
+    protected function switchBranch($branch_name)
+    {
+        $this->log('Checking out new branch: ' . $branch_name);
+        $this->execCommand('git checkout -b ' . $branch_name, false);
+        // Make sure we do not have any uncommitted changes.
+        $this->execCommand('git checkout .', false);
+    }
+
+    protected function cleanRepoForCommit()
     {
         // Clean up the composer.lock file if it was not part of the repo.
         $this->execCommand('git clean -f composer.*');
+    }
+
+    protected function getCommitCreator(Config $config) : Creator
+    {
         $creator = new Creator();
         $type = Type::NONE;
-        $msg = sprintf('Update %s', $package_name);
         $creator->setType($type);
-        if ($item) {
-            try {
+        try {
+            if ($config) {
                 $creator->setType($config->getCommitMessageConvention());
-            } catch (\InvalidArgumentException $e) {
-                // Fall back to using none.
             }
-            $msg = $creator->generateMessage($item, $is_dev);
+        } catch (\InvalidArgumentException $e) {
+            // Fall back to using none.
         }
+        return $creator;
+    }
+
+    protected function commitFilesForPackage(UpdateListItem $item, Config $config, $is_dev = false)
+    {
+        $this->cleanRepoForCommit();
+        $creator = $this->getCommitCreator($config);
+        $msg = $creator->generateMessage($item, $is_dev);
+        $this->commitFiles($msg);
+    }
+
+    protected function commitFiles($msg)
+    {
+
         $command = sprintf(
             'GIT_AUTHOR_NAME="%s" GIT_AUTHOR_EMAIL="%s" GIT_COMMITTER_NAME="%s" GIT_COMMITTER_EMAIL="%s" git commit %s -m "%s"',
             $this->githubUserName,
@@ -1006,6 +1134,7 @@ class CosyComposer
             $this->log($this->getLastStdErr(), Message::COMMAND);
             throw new \Exception('Error committing the composer files. They are probably not changed.');
         }
+        $this->commitMessage = $msg;
     }
 
     protected function runAuthExportToken($hostname, $token)
@@ -1041,6 +1170,71 @@ class CosyComposer
                     false
                 );
                 break;
+        }
+    }
+
+    protected function getPrParams($branch_name, $body, $title, $default_branch, Config $config)
+    {
+        $head = $this->forkUser . ':' . $branch_name;
+        if ($this->isPrivate) {
+            $head = $branch_name;
+        }
+        if ($this->slug->getProvider() === 'bitbucket.org') {
+            // Currently does not support having the collapsible section thing.
+            // @todo: Revisit from time to time?
+            // @todo: Make sure we replace the correct one. What if the changelog has this in it?
+            $body = str_replace([
+                '<details>',
+                '<summary>',
+                '</summary>',
+                '</details>',
+            ], '', $body);
+        }
+        $assignees = $config->getAssignees();
+        $assignees_allowed_roles = [
+            'agency',
+            'enterprise',
+        ];
+        $assignees_allowed = false;
+        if ($this->project && $this->project->getRoles()) {
+            foreach ($this->project->getRoles() as $role) {
+                if (in_array($role, $assignees_allowed_roles)) {
+                    $assignees_allowed = true;
+                }
+            }
+        }
+        if (!$assignees_allowed) {
+            $assignees = [];
+        }
+        return [
+            'base'  => $default_branch,
+            'head'  => $head,
+            'title' => $title,
+            'body'  => $body,
+            'assignees' => $assignees,
+        ];
+    }
+
+    protected function createPullrequest($pr_params)
+    {
+        $this->log('Creating pull request from ' . $pr_params['head']);
+        return $this->getPrClient()->createPullRequest($this->slug, $pr_params);
+    }
+
+    protected function pushCode($branch_name, $default_base, $lock_file_contents)
+    {
+        if ($this->isPrivate) {
+            $origin = 'origin';
+            if ($this->execCommand("git push $origin $branch_name --force")) {
+                throw new GitPushException('Could not push to ' . $branch_name);
+            }
+        } else {
+            $this->preparePrClient();
+            /** @var PublicGithubWrapper $this_client */
+            $this_client = $this->client;
+            $this_client->forceUpdateBranch($branch_name, $default_base);
+            $msg = $this->commitMessage;
+            $this_client->commitNewFiles($this->tmpDir, $default_base, $branch_name, $msg, $lock_file_contents);
         }
     }
 
@@ -1126,10 +1320,7 @@ class CosyComposer
 
                 // Create a new branch.
                 $branch_name = $this->createBranchName($item, $one_pr_per_dependency, $config);
-                $this->log('Checking out new branch: ' . $branch_name);
-                $this->execCommand('git checkout -b ' . $branch_name, false);
-                // Make sure we do not have any uncommitted changes.
-                $this->execCommand('git checkout .', false);
+                $this->switchBranch($branch_name);
                 // Try to use the same version constraint.
                 $version = (string) $req_item;
                 // @todo: This is not nearly something that covers the world of constraints. Probably possible to use
@@ -1228,21 +1419,9 @@ class CosyComposer
                 $this->log('Successfully ran command composer update for package ' . $package_name);
                 $new_lock_data = json_decode(file_get_contents($this->compserJsonDir . '/composer.lock'));
                 $list_item = new UpdateListItem($package_name, $post_update_data->version, $item->version);
-                $this->commitFiles($package_name, $list_item, $config, $is_require_dev);
+                $this->commitFilesForPackage($list_item, $config, $is_require_dev);
                 $this->runAuthExport($hostname);
-                $origin = 'fork';
-                if ($this->isPrivate) {
-                    $origin = 'origin';
-                    if ($this->execCommand("git push $origin $branch_name --force")) {
-                        throw new GitPushException('Could not push to ' . $branch_name);
-                    }
-                } else {
-                    $this->preparePrClient();
-                    /** @var PublicGithubWrapper $this_client */
-                    $this_client = $this->client;
-                    $this_client->forceUpdateBranch($branch_name, $default_base);
-                    $this_client->commitNewFiles($this->tmpDir, $default_base, $branch_name, sprintf("Update %s", $package_name), $lock_file_contents);
-                }
+                $this->pushCode($branch_name, $default_base, $lock_file_contents);
                 $this->log('Trying to retrieve changelog for ' . $package_name);
                 $changelog = null;
                 try {
@@ -1252,54 +1431,12 @@ class CosyComposer
                     // New feature. Just log it.
                     $this->log('Exception for changelog: ' . $e->getMessage());
                 }
-                $this->log('Creating pull request from ' . $branch_name);
-                $head = $this->forkUser . ':' . $branch_name;
-                if ($this->isPrivate) {
-                    $head = $branch_name;
-                }
                 $comparer = new LockDataComparer($lockdata, $new_lock_data);
                 $update_list = $comparer->getUpdateList();
                 $body = $this->createBody($item, $post_update_data, $changelog, $security_update, $update_list);
-                if ($this->slug->getProvider() === 'bitbucket.org') {
-                    // Currently does not support having the collapsible section thing.
-                    // @todo: Revisit from time to time?
-                    // @todo: Make sure we replace the correct one. What if the changelog has this in it?
-                    $body = str_replace([
-                        '<details>',
-                        '<summary>',
-                        '</summary>',
-                        '</details>',
-                    ], '', $body);
-                }
-                $assignees = [];
-                if (!empty($cdata->extra->violinist->assignees)) {
-                    if (is_array($cdata->extra->violinist->assignees)) {
-                        $assignees = $cdata->extra->violinist->assignees;
-                    }
-                }
-                $assignees_allowed_roles = [
-                    'agency',
-                    'enterprise',
-                ];
-                $assignees_allowed = false;
-                if ($this->project && $this->project->getRoles()) {
-                    foreach ($this->project->getRoles() as $role) {
-                        if (in_array($role, $assignees_allowed_roles)) {
-                            $assignees_allowed = true;
-                        }
-                    }
-                }
-                if (!$assignees_allowed) {
-                    $assignees = [];
-                }
-                $pr_params = [
-                    'base'  => $default_branch,
-                    'head'  => $head,
-                    'title' => $this->createTitle($item, $post_update_data, $security_update),
-                    'body'  => $body,
-                    'assignees' => $assignees,
-                ];
-                $pullRequest = $this->getPrClient()->createPullRequest($this->slug, $pr_params);
+                $title = $this->createTitle($item, $post_update_data, $security_update);
+                $pr_params = $this->getPrParams($branch_name, $body, $title, $default_branch, $config);
+                $pullRequest = $this->createPullrequest($pr_params);
                 if (!empty($pullRequest['html_url'])) {
                     $this->log($pullRequest['html_url'], Message::PR_URL, [
                         'package' => $package_name,
@@ -1330,17 +1467,9 @@ class CosyComposer
                 ]);
             } catch (ValidationFailedException $e) {
                 // @todo: Do some better checking. Could be several things, this.
-                $this->log('Had a problem with creating the pull request: ' . $e->getMessage(), 'error');
-                if ($this->shouldUpdatePr($branch_name, $pr_params, $prs_named)) {
-                    $this->log('Will try to update the PR.');
-                    $this->getPrClient()->updatePullRequest($this->slug, $prs_named[$branch_name]['number'], $pr_params);
-                }
+                $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
             } catch (\Gitlab\Exception\RuntimeException $e) {
-                $this->log('Had a problem with creating the pull request: ' . $e->getMessage(), 'error');
-                if ($this->shouldUpdatePr($branch_name, $pr_params, $prs_named)) {
-                    $this->log('Will try to update the PR based on settings.');
-                    $this->getPrClient()->updatePullRequest($this->slug, $prs_named[$branch_name]['number'], $pr_params);
-                }
+                $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
             } catch (ComposerUpdateProcessFailedException $e) {
                 $this->log('Caught an exception: ' . $e->getMessage(), 'error');
                 $this->log($e->getErrorOutput(), Message::COMMAND, [
@@ -1369,6 +1498,15 @@ class CosyComposer
             } catch (\Throwable $e) {
                 $this->log('Rolling back state on the default branch was not successful. Subsequent updates may be affected');
             }
+        }
+    }
+
+    protected function handlePossibleUpdatePrScenario(\Exception $e, $branch_name, $pr_params, $prs_named)
+    {
+        $this->log('Had a problem with creating the pull request: ' . $e->getMessage(), 'error');
+        if ($this->shouldUpdatePr($branch_name, $pr_params, $prs_named)) {
+            $this->log('Will try to update the PR based on settings.');
+            $this->getPrClient()->updatePullRequest($this->slug, $prs_named[$branch_name]['number'], $pr_params);
         }
     }
 
