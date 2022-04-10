@@ -525,11 +525,11 @@ class CosyComposer
             $key = $env_parts[0];
             $existing_env = getenv($key);
             if ($existing_env) {
-                $this->logger->log('info', new Message("The ENV variable $key was skipped because it exists and can not be overwritten"));
+                $this->getLogger()->log('info', new Message("The ENV variable $key was skipped because it exists and can not be overwritten"));
                 continue;
             }
             $value = $env_parts[1];
-            $this->logger->log('info', new Message("Exporting ENV variable $key: $value"));
+            $this->getLogger()->log('info', new Message("Exporting ENV variable $key: $value"));
             putenv($env_string);
             $_ENV[$key] = $value;
         }
@@ -624,7 +624,7 @@ class CosyComposer
         }
         $local_adapter = new Local($this->compserJsonDir);
         if (!empty($_ENV['config_branch'])) {
-            $config_branch = $_SERVER['config_branch'];
+            $config_branch = $_ENV['config_branch'];
             $this->log('Changing to config branch: ' . $config_branch);
             $tmpdir = sprintf('/tmp/%s', uniqid('', true));
             $clone_result = $this->execCommand('git clone --depth=1 ' . $url . ' ' . $tmpdir . ' -b ' . $config_branch, false, 120);
