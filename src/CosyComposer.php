@@ -936,7 +936,18 @@ class CosyComposer
                             'version' => $item->latest,
                         ];
                         $security_update = false;
-                        $package_name_in_composer_json = self::getComposerJsonName($composer_json_data, $item->name, $this->compserJsonDir);
+                        $package_name_in_composer_json = $item->name;
+                        try {
+                            $package_name_in_composer_json = self::getComposerJsonName($composer_json_data, $item->name, $this->compserJsonDir);
+                        } catch (\Exception $e) {
+                            // If this was a package that we somehow got because we have allowed to update other than direct
+                            // dependencies we can avoid re-throwing this.
+                            if ($config->shouldCheckDirectOnly()) {
+                                throw $e;
+                            }
+                            // Taking a risk :o.
+                            $package_name_in_composer_json = $item->name;
+                        }
                         if (isset($security_alerts[$package_name_in_composer_json])) {
                             $security_update = true;
                         }
