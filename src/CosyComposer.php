@@ -1084,12 +1084,13 @@ class CosyComposer
                 $this->log($pullRequest['html_url'], Message::PR_URL, [
                     'package' => 'all',
                 ]);
+                $this->handleAutomerge($config, $pullRequest, $security_update);
             }
         } catch (ValidationFailedException $e) {
             // @todo: Do some better checking. Could be several things, this.
-            $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
+            $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named, $config, $security_update);
         } catch (\Gitlab\Exception\RuntimeException $e) {
-            $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
+            $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named, $config, $security_update);
         } catch (\Throwable $e) {
             $this->log('Caught exception while running update all: ' . $e->getMessage());
         }
@@ -1483,6 +1484,7 @@ class CosyComposer
                     $this->log($pullRequest['html_url'], Message::PR_URL, [
                         'package' => $package_name,
                     ]);
+                    $this->handleAutomerge($config, $pullRequest, $security_update);
                 }
                 $total_prs++;
             } catch (CanNotUpdateException $e) {
@@ -1509,9 +1511,9 @@ class CosyComposer
                 ]);
             } catch (ValidationFailedException $e) {
                 // @todo: Do some better checking. Could be several things, this.
-                $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
+                $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named, $config, $security_update);
             } catch (\Gitlab\Exception\RuntimeException $e) {
-                $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named);
+                $this->handlePossibleUpdatePrScenario($e, $branch_name, $pr_params, $prs_named, $config, $security_update);
             } catch (ComposerUpdateProcessFailedException $e) {
                 $this->log('Caught an exception: ' . $e->getMessage(), 'error');
                 $this->log($e->getErrorOutput(), Message::COMMAND, [
@@ -1545,12 +1547,24 @@ class CosyComposer
         }
     }
 
-    protected function handlePossibleUpdatePrScenario(\Exception $e, $branch_name, $pr_params, $prs_named)
+    protected function handlePossibleUpdatePrScenario(\Exception $e, $branch_name, $pr_params, $prs_named, Config $config, $security_update = false)
     {
         $this->log('Had a problem with creating the pull request: ' . $e->getMessage(), 'error');
         if ($this->shouldUpdatePr($branch_name, $pr_params, $prs_named)) {
             $this->log('Will try to update the PR based on settings.');
             $this->getPrClient()->updatePullRequest($this->slug, $prs_named[$branch_name]['number'], $pr_params);
+            $this->handleAutoMerge($config, $prs_named[$branch_name], $security_update);
+        }
+    }
+
+    protected function handleAutoMerge(Config $config, $pullRequest, $security_update = false)
+    {
+        if ($config->shouldAutoMerge($security_update)) {
+            $this->log('Config indicated automerge should be enabled, Trying to enable automerge');
+            $result = $this->getPrClient()->enableAutomerge($pullRequest, $this->slug);
+            if (!$result) {
+                $this->log('Enabling automerge failed.');
+            }
         }
     }
 

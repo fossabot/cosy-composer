@@ -154,4 +154,31 @@ class Gitlab implements ProviderInterface
         $url = parse_url($url);
         return ltrim($url['path'], '/');
     }
+
+    public function enableAutomerge(array $pr_data, Slug $slug) : bool
+    {
+        if (empty($pr_data['number']) && !empty($pr_data["iid"])) {
+            $pr_data['number'] = $pr_data["iid"];
+        }
+        $data = [
+            'merge_when_pipeline_succeeds' => true,
+        ];
+        $project_id = self::getProjectId($slug->getUrl());
+        $retries = 0;
+        while (true) {
+            try {
+                $result = $this->client->mergeRequests()->merge($project_id, $pr_data["number"], $data);
+                if (!empty($result["merge_when_pipeline_succeeds"])) {
+                    return true;
+                }
+            } catch (\Throwable $e) {
+            }
+            $retries++;
+            if ($retries > 10) {
+                return false;
+            }
+            usleep($retries * 100);
+        }
+        return true;
+    }
 }
