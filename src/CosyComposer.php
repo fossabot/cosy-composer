@@ -1558,6 +1558,7 @@ class CosyComposer
                         'package' => $package_name,
                     ]);
                     $this->handleAutomerge($config, $pullRequest, $security_update);
+                    $this->handleLabels($config, $pullRequest, $security_update);
                     if (!empty($pullRequest['number'])) {
                         $this->closeOutdatedPrsForPackage($item->name, $item->version, $config, $pullRequest['number'], $prs_named, $default_branch);
                     }
@@ -1652,7 +1653,26 @@ class CosyComposer
         if ($this->shouldUpdatePr($branch_name, $pr_params, $prs_named)) {
             $this->log('Will try to update the PR based on settings.');
             $this->getPrClient()->updatePullRequest($this->slug, $prs_named[$branch_name]['number'], $pr_params);
-            $this->handleAutoMerge($config, $prs_named[$branch_name], $security_update);
+        }
+        $this->handleAutoMerge($config, $prs_named[$branch_name], $security_update);
+        $this->handleLabels($config, $prs_named[$branch_name], $security_update);
+    }
+
+    protected function handleLabels(Config $config, $pullRequest, $security_update = false)
+    {
+        $labels = $config->getLabels();
+        if ($security_update) {
+            $labels = array_merge($labels, $config->getLabelsSecurity());
+        }
+        if (empty($labels)) {
+            return;
+        }
+        $this->log("Trying to add labels to PR");
+        $result = $this->getPrClient()->addLabels($pullRequest, $this->slug, $labels);
+        if (!$result) {
+            $this->log("Error adding labels");
+        } else {
+            $this->log("Labels added successfully");
         }
     }
 
