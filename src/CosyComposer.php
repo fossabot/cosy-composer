@@ -39,7 +39,6 @@ use League\Flysystem\Adapter\Local;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Output\OutputInterface;
 use Violinist\ProjectData\ProjectData;
 use Violinist\Slug\Slug;
 use Violinist\TimeFrameHandler\Handler;
@@ -134,13 +133,6 @@ class CosyComposer
     private $messageFactory;
 
     /**
-     * The output we use for updates?
-     *
-     * @var ArrayOutput
-     */
-    protected $output;
-
-    /**
      * @var string
      */
     protected $tmpDir;
@@ -159,11 +151,6 @@ class CosyComposer
      * @var string
      */
     protected $tmpParent = '/tmp';
-
-    /**
-     * @var Application
-     */
-    private $app;
 
     /**
      * @var LoggerInterface
@@ -319,14 +306,6 @@ class CosyComposer
     }
 
     /**
-     * @param Application $app
-     */
-    public function setApp(Application $app)
-    {
-        $this->app = $app;
-    }
-
-    /**
      * @return string
      */
     public function getCwd()
@@ -372,7 +351,7 @@ class CosyComposer
     /**
      * CosyComposer constructor.
      */
-    public function __construct($slug, Application $app, ArrayOutput $output, CommandExecuter $executer)
+    public function __construct($slug, CommandExecuter $executer)
     {
         if ($slug) {
             // @todo: Move to create from URL.
@@ -383,8 +362,6 @@ class CosyComposer
         $tmpdir = uniqid();
         $this->tmpDir = sprintf('/tmp/%s', $tmpdir);
         $this->messageFactory = new ViolinistMessages();
-        $this->app = $app;
-        $this->output = $output;
         $this->executer = $executer;
         $this->checkerFactory = new SecurityCheckerFactory();
     }
@@ -743,17 +720,6 @@ class CosyComposer
             $this->cleanUp();
             return;
         }
-        $app = $this->app;
-        $d = $app->getDefinition();
-        /** @var InputOption[] $opts */
-        $opts = $d->getOptions();
-        try {
-            $opts['ansi']->setDefault('--no-ansi');
-        } catch (\Throwable $e) {
-        }
-        $d->setOptions($opts);
-        $app->setDefinition($d);
-        $app->setAutoExit(false);
         $this->doComposerInstall($config);
         // Now read the lockfile.
         $composer_lock_after_installing = json_decode(@file_get_contents($this->compserJsonDir . '/composer.lock'));
@@ -783,56 +749,45 @@ class CosyComposer
         // repo is a manual job merging and maintaining. On top of that, it requires the built container to be
         // up to date. So here could be several hours of delay on critical stuff.
         $this->attachDrupalAdvisories($security_alerts);
-        $array_input_array = [
-            'outdated',
-            '-d' => $this->getCwd(),
-            '--minor-only' => true,
-            '--format' => 'json',
-            '--no-interaction' => true,
-            '--direct' => false,
-        ];
+        $direct = null;
         if ($config->shouldCheckDirectOnly()) {
             $this->log('Checking only direct dependencies since config option check_only_direct_dependencies is enabled');
-            $array_input_array['--direct'] = true;
+            $direct = '--direct';
         }
         // If we should always update all, then of course we should not only check direct dependencies outdated.
         // Regardless of the option above actually.
         if ($config->shouldAlwaysUpdateAll()) {
             $this->log('Checking all (not only direct dependencies) since config option always_update_all is enabled');
-            $array_input_array['--direct'] = false;
+            $direct = null;
         }
         // If we should allow indirect packages to updated via running composer update my/direct, then we need to
         // uncover which indirect are actually out of date. Meaning direct is required to be false.
         if ($config->shouldUpdateIndirectWithDirect()) {
             $this->log('Checking all (not only direct dependencies) since config option allow_update_indirect_with_direct is enabled');
-            $array_input_array['--direct'] = false;
+            $direct = null;
         }
-        $i = new ArrayInput($array_input_array);
-        $app->run($i, $this->output);
-        $raw_data = $this->output->fetch();
-        $data = null;
-        foreach ($raw_data as $delta => $item) {
-            if (empty($item) || empty($item[0])) {
-                continue;
-            }
-            if (!is_array($item)) {
-                // Can't be it.
-                continue;
-            }
-            foreach ($item as $value) {
-                if (!$json_update = @json_decode($value)) {
-                    // Not interesting.
-                    continue;
-                }
-                if (!isset($json_update->installed)) {
-                    throw new \Exception(
-                        'JSON output from composer was not looking as expected after checking updates'
-                    );
-                }
-                $data = $json_update->installed;
-                break;
-            }
+        $composer_outdated_command = [
+            'composer',
+            'outdated',
+            '--minor-only',
+            '--format=json',
+            '--no-interaction',
+        ];
+        if ($direct) {
+            $composer_outdated_command[] = $direct;
         }
+        $this->execCommand($composer_outdated_command);
+        $raw_data = $this->getLastStdOut();
+        $json_update = @json_decode($raw_data);
+        if (!$json_update) {
+            throw new \Exception('The output for available updates could not be parsed as JSON');
+        }
+        if (!isset($json_update->installed)) {
+            throw new \Exception(
+                'JSON output from composer was not looking as expected after checking updates'
+            );
+        }
+        $data = $json_update->installed;
         if (!is_array($data)) {
             $this->log('Update data was in wrong format or missing. This is an error in violinist and should be reported');
             $this->log(print_r($raw_data, true), Message::COMMAND, [
@@ -1797,14 +1752,6 @@ class CosyComposer
             $msgs[] = $msg;
         }
         return $msgs;
-    }
-
-    /**
-     * @param ArrayOutput $output
-     */
-    public function setOutput(ArrayOutput $output)
-    {
-        $this->output = $output;
     }
 
     /**
