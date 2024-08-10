@@ -19,6 +19,7 @@ use GuzzleHttp\Psr7\Request;
 use Http\Adapter\Guzzle7\Client as GuzzleClient;
 use Http\Client\HttpClient;
 use Symfony\Component\Process\Process;
+use Symfony\Component\Yaml\Yaml;
 use Violinist\AllowListHandler\AllowListHandler;
 use Violinist\ChangelogFetcher\ChangelogRetriever;
 use Violinist\ChangelogFetcher\DependencyRepoRetriever;
@@ -50,6 +51,8 @@ class CosyComposer
     const UPDATE_ALL = 'update_all';
 
     const UPDATE_INDIVIDUAL = 'update_individual';
+
+    const COMMIT_MESSAGE_SEPARATOR = '------';
 
     private $urlArray;
 
@@ -1202,12 +1205,11 @@ class CosyComposer
         $this->cleanRepoForCommit();
         $creator = $this->getCommitCreator($config);
         $msg = $creator->generateMessage($item, $is_dev);
-        $this->commitFiles($msg);
+        $this->commitFiles($msg, $item);
     }
 
-    protected function commitFiles($msg)
+    protected function commitFiles($msg, ?UpdateListItem $item = null)
     {
-
         $command = array_filter([
             'git', "commit",
             'composer.json',
@@ -1215,6 +1217,16 @@ class CosyComposer
             '-m',
             $msg,
         ]);
+        if (getenv('USE_NEW_COMMIT_MSG') && $item) {
+            $command[] = '-m';
+            $command[] = sprintf("%s\n%s", self::COMMIT_MESSAGE_SEPARATOR, Yaml::dump([
+                'update_data' => [
+                    'package' => $item->getPackageName(),
+                    'from' => $item->getOldVersion(),
+                    'to' => $item->getNewVersion(),
+                ],
+            ]));
+        }
         if ($this->execCommand($command, false, 120, [
             'GIT_AUTHOR_NAME' => $this->githubUserName,
             'GIT_AUTHOR_EMAIL' => $this->githubEmail,
